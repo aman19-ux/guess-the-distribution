@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guess the Distribution</title>
+<style>
+:root {
+  --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a65; --line: #e3e1da;
+  --accent: #2f5bd3; --bar: #9db2ea; --curve: #c2410c; --good: #1f8a4c; --bad: #c2410c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131313; --panel: #1c1c1c; --ink: #ecebe6; --muted: #9a9993; --line: #2f2f2d;
+    --accent: #7c9cf0; --bar: #3f5aa6; --curve: #fb923c; --good: #4ade80; --bad: #fb923c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 780px; margin: 0 auto; padding: 20px 16px 40px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.scores { display: flex; gap: 16px; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+.scores b { color: var(--ink); font-weight: 600; }
+.modes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
+.modes button { border: 0; background: var(--panel); color: var(--muted); padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.modes button.on { background: var(--accent); color: #fff; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+canvas { width: 100%; height: 300px; display: block; }
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 12px; }
+.choices button { font: inherit; padding: 10px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; text-align: left; }
+.choices button:hover:not(:disabled) { border-color: var(--accent); }
+.choices button kbd { color: var(--muted); font: 12px ui-monospace, monospace; margin-right: 6px; }
+.choices button.right { border-color: var(--good); box-shadow: inset 0 0 0 1px var(--good); }
+.choices button.wrong { border-color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad); opacity: .8; }
+.choices button:disabled { cursor: default; }
+.row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 12px; }
+.ghost { font: inherit; font-size: 13px; background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.primary { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+.stats { font: 13px ui-monospace, monospace; color: var(--muted); }
+.feedback { margin-top: 12px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); display: none; }
+.feedback.show { display: block; }
+.feedback .verdict { font-weight: 600; }
+.feedback .verdict.good { color: var(--good); }
+.feedback .verdict.bad { color: var(--bad); }
+.feedback p { margin: 6px 0 0; color: var(--muted); }
+footer { margin-top: 14px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Guess the Distribution</h1>
+    <div class="scores">
+      <span>Score <b id="score">0</b></span>
+      <span>Streak <b id="streak">0</b></span>
+      <span>Best <b id="best">0</b></span>
+    </div>
+  </header>
+
+  <div class="modes" id="modes">
+    <button data-mode="mixed" class="on">Mixed</button>
+    <button data-mode="hist">Histograms</button>
+    <button data-mode="path">Paths</button>
+  </div>
+
+  <div class="card">
+    <div class="meta"><span id="prompt"></span><span id="size"></span></div>
+    <canvas id="cv"></canvas>
+    <div class="choices" id="choices"></div>
+    <div class="row">
+      <button class="ghost" id="hintBtn">Show stats (halves points) [H]</button>
+      <span class="stats" id="stats"></span>
+    </div>
+    <div class="feedback" id="feedback">
+      <div class="verdict" id="verdict"></div>
+      <p id="tell"></p>
+      <div class="row"><button class="primary" id="nextBtn">Next round [Enter]</button></div>
+    </div>
+  </div>
+  <footer>Each correct answer raises your streak, and a longer streak means fewer samples (harder). The x-axis on histograms is unlabelled, so judge shape only. Keys 1–5 answer.</footer>
+</main>
+
+<script>
+// ---------- random helpers ----------
+const uni = (a, b) => a + (b - a) * Math.random();
+const pick = a => a[Math.floor(Math.random() * a.length)];
+function randn() { let u = 0; while (u === 0) u = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); }
+function poisson(l) { const L = Math.exp(-l); let k = 0, p = 1; do { k++; p *= Math.random(); } while (p > L); return k - 1; }
+function lgamma(x) {
+  const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
+    12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
+  x -= 1; let a = c[0]; const t = x + 7.5;
+  for (let i = 1; i < 9; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+}
+function moments(a) {
+  const n = a.length; let m = 0; for (const v of a) m += v; m /= n;
+  let m2 = 0, m3 = 0, m4 = 0;
+  for (const v of a) { const d = v - m, d2 = d * d; m2 += d2; m3 += d2 * d; m4 += d2 * d2; }
+  m2 /= n; m3 /= n; m4 /= n;
+  return { mean: m, sd: Math.sqrt(m2), skew: m3 / m2 ** 1.5, kurt: m4 / (m2 * m2) - 3 };
+}
+function quantile(s, p) { const i = (s.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i); return s[lo] + (s[hi] - s[lo]) * (i - lo); }
+function corr(a, b) {
+  const ma = moments(a).mean, mb = moments(b).mean; let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < a.length; i++) { const x = a[i] - ma, y = b[i] - mb; sab += x * y; saa += x * x; sbb += y * y; }
+  return sab / Math.sqrt(saa * sbb);
+}
+
+// ---------- histogram distributions (standardised shapes; axis is unlabelled) ----------
+const DISTS = {
+  normal: { label: 'Normal', tell: 'Symmetric, bell-shaped, thin tails: almost nothing beyond 3σ and excess kurtosis near 0.',
+    make: () => ({ sample: randn, pdf: x => Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI), params: 'μ = 0, σ = 1' }) },
+  lognormal: { label: 'Lognormal', tell: 'Right-skewed with a long right tail and a hard floor at zero on the left. When σ is small it looks almost Normal, so check for the slight lean.',
+    make: () => { const s = uni(0.3, 0.75); return { sample: () => Math.exp(s * randn()),
+      pdf: x => x <= 0 ? 0 : Math.exp(-(Math.log(x) ** 2) / (2 * s * s)) / (x * s * Math.sqrt(2 * Math.PI)), params: `σ = ${s.toFixed(2)}` }; } },
+  t: { label: 'Student-t', tell: 'Symmetric like the Normal, but with heavy tails: isolated bars far out (see the ◂/▸ overflow counts). Excess kurtosis is 6/(ν−4), and it is infinite for ν ≤ 4.',
+    make: () => { const nu = pick([3, 4, 5, 6]); const k = Math.exp(lgamma((nu + 1) / 2) - lgamma(nu / 2)) / Math.sqrt(nu * Math.PI);
+      return { sample: () => { let c = 0; for (let i = 0; i < nu; i++) c += randn() ** 2; return randn() / Math.sqrt(c / nu); },
+        pdf: x => k * (1 + x * x / nu) ** (-(nu + 1) / 2), params: `ν = ${nu}` }; } },
+  laplace: { label: 'Laplace', tell: 'A sharp tent-shaped peak with straight-line (exponential) tails. Excess kurtosis is exactly 3, so the tails are fatter than Normal but tamer than a low-ν t.',
+    make: () => ({ sample: () => { const u = Math.random() - 0.5; return -Math.sign(u) * Math.log(1 - 2 * Math.abs(u)); },
+      pdf: x => 0.5 * Math.exp(-Math.abs(x)), params: 'b = 1' }) },
+  uniform: { label: 'Uniform', tell: 'Flat top with hard edges and no tails. Excess kurtosis is −1.2. At small n the noise can make it look lumpy.',
+    make: () => ({ sample: Math.random, pdf: x => (x >= 0 && x <= 1) ? 1 : 0, params: 'on [0, 1]' }) },
+};
+
+// ---------- stochastic processes (T = 1, start at 100) ----------
+const PROCS = {
+  bm: { label: 'Brownian motion', tell: 'The wiggle size stays the same whatever the level, and nothing pulls the path back. It can go negative.',
+    make: n => { const mu = uni(-20, 20), sig = uni(30, 55), dt = 1 / n; const p = [100];
+      for (let i = 0; i < n; i++) p.push(p[i] + mu * dt + sig * Math.sqrt(dt) * randn());
+      return { path: p, params: `μ = ${mu.toFixed(0)}, σ = ${sig.toFixed(0)} (absolute)` }; } },
+  gbm: { label: 'Geometric BM', tell: 'Moves are proportional to the level: the path is choppier when high and calmer when low, and it stays strictly positive. |Δx| is correlated with x.',
+    make: n => { const mu = uni(-0.1, 0.3), s = uni(0.5, 0.85), dt = 1 / n; const p = [100];
+      for (let i = 0; i < n; i++) p.push(p[i] * Math.exp((mu - s * s / 2) * dt + s * Math.sqrt(dt) * randn()));
+      return { path: p, params: `μ = ${mu.toFixed(2)}, σ = ${s.toFixed(2)}` }; } },
+  ou: { label: 'Ornstein–Uhlenbeck', tell: 'Mean-reverting: the path is pulled back towards a long-run level (dashed line) and fills a band. It often starts away from that level and decays towards it.',
+    make: n => { const th = uni(5, 12), m = 100 + uni(-10, 10), sig = uni(40, 70), dt = 1 / n;
+      const e = Math.exp(-th * dt), sd = sig * Math.sqrt((1 - e * e) / (2 * th)); const p = [m + pick([-1, 1]) * uni(15, 40)];
+      for (let i = 0; i < n; i++) p.push(m + (p[i] - m) * e + sd * randn());
+      return { path: p, level: m, params: `θ = ${th.toFixed(1)}, long-run level = ${m.toFixed(0)}, σ = ${sig.toFixed(0)}` }; } },
+  jump: { label: 'Jump diffusion', tell: 'Calm diffusion broken by sudden gaps (the dots). The increments have large excess kurtosis because a few moves are huge.',
+    make: n => { const s = uni(0.15, 0.3), dt = 1 / n, k = Math.max(1, poisson(uni(2, 4)));
+      const jumps = new Set(); while (jumps.size < Math.min(k, n - 1)) jumps.add(1 + Math.floor(Math.random() * (n - 1)));
+      const p = [100];
+      for (let i = 0; i < n; i++) { let r = -s * s / 2 * dt + s * Math.sqrt(dt) * randn();
+        if (jumps.has(i + 1)) r += pick([-1, 1]) * uni(0.12, 0.28); p.push(p[i] * Math.exp(r)); }
+      return { path: p, jumps: [...jumps], params: `σ = ${s.toFixed(2)}, ${jumps.size} jump${jumps.size > 1 ? 's' : ''}` }; } },
+};
+
+// ---------- state ----------
+const $ = id => document.getElementById(id);
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+let mode = 'mixed', score = 0, streak = 0, best = +(store.get('gtd-best') || 0), round, answered, hintUsed;
+
+const sampleSize = () => Math.max(25, Math.round(1500 * 0.78 ** Math.min(streak, 20)));
+const pathSteps = () => Math.max(30, Math.round(500 * 0.85 ** Math.min(streak, 20)));
+
+function histLayout(xs) {
+  const s = [...xs].sort((a, b) => a - b), n = s.length;
+  const q1 = quantile(s, 0.25), q3 = quantile(s, 0.75), iqr = q3 - q1, med = quantile(s, 0.5);
+  let lo = s[0], hi = s[n - 1];
+  if (hi - lo > 12 * iqr) { lo = Math.max(lo, med - 6 * iqr); hi = Math.min(hi, med + 6 * iqr); }
+  let bw = 2 * iqr / Math.cbrt(n), nb = Math.ceil((hi - lo) / bw);
+  nb = Math.min(120, Math.max(8, nb)); bw = (hi - lo) / nb;
+  const counts = new Array(nb).fill(0); let outL = 0, outR = 0;
+  for (const x of xs) { if (x < lo) outL++; else if (x > hi) outR++; else counts[Math.min(nb - 1, Math.floor((x - lo) / bw))]++; }
+  return { counts, lo, hi, bw, nb, outL, outR };
+}
+
+function newRound() {
+  const kind = mode === 'mixed' ? (Math.random() < 0.6 ? 'hist' : 'path') : mode;
+  if (kind === 'hist') {
+    const key = pick(Object.keys(DISTS)), d = DISTS[key].make(), n = sampleSize();
+    const xs = Array.from({ length: n }, d.sample);
+    round = { kind, key, d, xs, layout: histLayout(xs), info: DISTS[key], params: d.params };
+    $('prompt').textContent = 'Which distribution generated this sample?';
+    $('size').textContent = `n = ${n}`;
+  } else {
+    const key = pick(Object.keys(PROCS)), steps = pathSteps(), p = PROCS[key].make(steps);
+    round = { kind, key, p, info: PROCS[key], params: p.params };
+    $('prompt').textContent = 'Which process generated this path?';
+    $('size').textContent = `${steps} steps`;
+  }
+  answered = false; hintUsed = false;
+  const opts = kind === 'hist' ? DISTS : PROCS;
+  $('choices').innerHTML = Object.entries(opts).map(([k, v], i) => `<button data-k="${k}"><kbd>${i + 1}</kbd>${v.label}</button>`).join('');
+  $('stats').textContent = ''; $('hintBtn').disabled = false;
+  $('feedback').classList.remove('show');
+  draw();
+}
+
+function showStats() {
+  if (answered || hintUsed) return;
+  hintUsed = true; $('hintBtn').disabled = true;
+  if (round.kind === 'hist') {
+    const m = moments(round.xs), far = round.xs.filter(x => Math.abs(x - m.mean) > 3 * m.sd).length / round.xs.length;
+    $('stats').textContent = `skew ${m.skew.toFixed(2)}  ex.kurt ${m.kurt.toFixed(2)}  beyond 3σ ${(far * 100).toFixed(1)}% (Normal: 0.3%)`;
+  } else {
+    const p = round.p.path, n = p.length - 1, dx = [], x = [];
+    for (let i = 0; i < n; i++) { dx.push(p[i + 1] - p[i]); x.push(p[i]); }
+    const mx = moments(x).mean, md = moments(dx).mean; let sxy = 0, sxx = 0;
+    for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (dx[i] - md); sxx += (x[i] - mx) ** 2; }
+    const kappa = -(sxy / sxx) * n;
+    $('stats').textContent = `Δx ex.kurt ${moments(dx).kurt.toFixed(1)}  corr(|Δx|, x) ${corr(dx.map(Math.abs), x).toFixed(2)}  κ̂ ${kappa.toFixed(1)}`;
+  }
+}
+
+function answer(k) {
+  if (answered) return;
+  answered = true;
+  const ok = k === round.key;
+  const pts = Math.round(10 * (1 + 0.5 * streak) * (hintUsed ? 0.5 : 1));
+  if (ok) { score += pts; streak++; } else { streak = 0; }
+  if (score > best) { best = score; store.set('gtd-best', best); }
+  for (const b of $('choices').children) {
+    b.disabled = true;
+    if (b.dataset.k === round.key) b.classList.add('right'); else if (b.dataset.k === k) b.classList.add('wrong');
+  }
+  $('hintBtn').disabled = true;
+  const v = $('verdict');
+  v.className = 'verdict ' + (ok ? 'good' : 'bad');
+  v.textContent = ok ? `Correct, +${pts}. ${round.info.label} (${round.params}).` : `It was ${round.info.label} (${round.params}). Streak reset.`;
+  $('tell').textContent = round.info.tell;
+  $('feedback').classList.add('show');
+  $('score').textContent = score; $('streak').textContent = streak; $('best').textContent = best;
+  draw();
+}
+
+// ---------- drawing ----------
+const cv = $('cv'), ctx = cv.getContext('2d');
+const col = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function niceTicks(lo, hi, count) {
+  const raw = (hi - lo) / count, mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+  const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag, out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (round) (round.kind === 'hist' ? drawHist : drawPath)(W, H);
+}
+
+function drawHist(W, H) {
+  const { counts, lo, hi, bw, nb, outL, outR } = round.layout, n = round.xs.length;
+  const pad = { l: 22, r: 22, t: 12, b: 22 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  let peak = Math.max(...counts);
+  for (let i = 0; i <= 200; i++) peak = Math.max(peak, n * bw * round.d.pdf(lo + (hi - lo) * i / 200));
+  const X = x => pad.l + (x - lo) / (hi - lo) * pw, Y = c => pad.t + ph - c / (peak * 1.08) * ph;
+  ctx.fillStyle = col('--bar');
+  for (let i = 0; i < nb; i++) {
+    if (!counts[i]) continue;
+    const x0 = X(lo + i * bw), x1 = X(lo + (i + 1) * bw);
+    ctx.fillRect(x0 + 0.5, Y(counts[i]), Math.max(1, x1 - x0 - 1), pad.t + ph - Y(counts[i]));
+  }
+  ctx.strokeStyle = col('--line'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad.l, pad.t + ph + 0.5); ctx.lineTo(W - pad.r, pad.t + ph + 0.5); ctx.stroke();
+  ctx.fillStyle = col('--muted'); ctx.font = '12px system-ui, sans-serif'; ctx.textBaseline = 'top';
+  if (outL) { ctx.textAlign = 'left'; ctx.fillText(`◂ ${outL}`, 2, pad.t + ph + 5); }
+  if (outR) { ctx.textAlign = 'right'; ctx.fillText(`${outR} ▸`, W - 2, pad.t + ph + 5); }
+  if (answered) {
+    ctx.strokeStyle = col('--curve'); ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0; i <= 400; i++) { const x = lo + (hi - lo) * i / 400, y = Y(n * bw * round.d.pdf(x));
+      i ? ctx.lineTo(X(x), y) : ctx.moveTo(X(x), y); }
+    ctx.stroke();
+  }
+}
+
+function drawPath(W, H) {
+  const p = round.p.path, n = p.length - 1;
+  let mn = Math.min(...p), mx = Math.max(...p); const padY = (mx - mn) * 0.08; mn -= padY; mx += padY;
+  const pad = { l: 44, r: 12, t: 10, b: 20 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const X = i => pad.l + i / n * pw, Y = v => pad.t + (mx - v) / (mx - mn) * ph;
+  ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const t of niceTicks(mn, mx, 4)) {
+    ctx.strokeStyle = col('--line'); ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(pad.l, Math.round(Y(t)) + 0.5); ctx.lineTo(W - pad.r, Math.round(Y(t)) + 0.5); ctx.stroke();
+    ctx.fillStyle = col('--muted'); ctx.fillText(t, pad.l - 6, Y(t));
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText('time →', pad.l + pw / 2, pad.t + ph + 4);
+  ctx.strokeStyle = col('--accent'); ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.beginPath();
+  p.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v))); ctx.stroke();
+  if (!answered) return;
+  if (round.p.level != null) {
+    ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = col('--curve'); ctx.lineWidth = 1.5; ctx.beginPath();
+    const y = Math.min(pad.t + ph, Math.max(pad.t, Y(round.p.level)));
+    ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke(); ctx.restore();
+  }
+  if (round.p.jumps) {
+    ctx.fillStyle = col('--curve');
+    for (const j of round.p.jumps) { ctx.beginPath(); ctx.arc(X(j), Y(p[j]), 4, 0, 2 * Math.PI); ctx.fill(); }
+  }
+}
+
+// ---------- wiring ----------
+$('choices').addEventListener('click', e => { const b = e.target.closest('button'); if (b) answer(b.dataset.k); });
+$('hintBtn').addEventListener('click', showStats);
+$('nextBtn').addEventListener('click', newRound);
+$('modes').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  mode = b.dataset.mode; for (const x of $('modes').children) x.classList.toggle('on', x === b); newRound();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { if (answered) { e.preventDefault(); newRound(); } return; }
+  if (e.key === 'h' || e.key === 'H') return showStats();
+  const i = +e.key - 1, btns = $('choices').children;
+  if (i >= 0 && i < btns.length && !answered) answer(btns[i].dataset.k);
+});
+window.addEventListener('resize', draw);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+$('best').textContent = best;
+newRound();
+</script>
+</body>
+</html>
